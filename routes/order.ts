@@ -64,7 +64,7 @@ export function placeOrder () {
         challengeUtils.solveIf(challenges.negativeOrderChallenge, () => { return totalPrice < 0 })
 
         if (req.body.UserId) {
-          settleWalletPayment(req, totalPrice, totalPoints, next)
+          await settleWalletPayment(req, totalPrice, totalPoints)
         }
 
         const pdfFile = `order_${orderId}.pdf`
@@ -154,12 +154,7 @@ async function processBasketItems (basket: BasketModel, req: Request): Promise<{
 }
 
 async function updateProductStock (productId: number, orderedQuantity: number) {
-  const product = await QuantityModel.findOne({ where: { ProductId: productId } })
-  if (product == null) {
-    return
-  }
-  const newQuantity = product.quantity - orderedQuantity
-  await QuantityModel.update({ quantity: newQuantity }, { where: { ProductId: productId } })
+  await QuantityModel.decrement({ quantity: orderedQuantity }, { where: { ProductId: productId } })
 }
 
 async function resolveDeliveryMethod (req: Request): Promise<DeliveryMethod> {
@@ -181,23 +176,15 @@ async function resolveDeliveryMethod (req: Request): Promise<DeliveryMethod> {
   return deliveryMethod
 }
 
-function settleWalletPayment (req: Request, totalPrice: number, totalPoints: number, next: NextFunction) {
-  if (req.body.orderDetails && req.body.orderDetails.paymentId === 'wallet') {
-    WalletModel.findOne({ where: { UserId: req.body.UserId } }).then((wallet) => {
-      if ((wallet != null) && wallet.balance >= totalPrice) {
-        WalletModel.decrement({ balance: totalPrice }, { where: { UserId: req.body.UserId } }).catch((error: unknown) => {
-          next(error)
-        })
-      } else {
-        next(new Error('Insufficient wallet balance.'))
-      }
-    }).catch((error: unknown) => {
-      next(error)
-    })
+async function settleWalletPayment (req: Request, totalPrice: number, totalPoints: number): Promise<void> {
+  if (req.body.orderDetails?.paymentId === 'wallet') {
+    const wallet = await WalletModel.findOne({ where: { UserId: req.body.UserId } })
+    if (wallet == null || wallet.balance < totalPrice) {
+      throw new Error('Insufficient wallet balance.')
+    }
+    await WalletModel.decrement({ balance: totalPrice }, { where: { UserId: req.body.UserId } })
   }
-  WalletModel.increment({ balance: totalPoints }, { where: { UserId: req.body.UserId } }).catch((error: unknown) => {
-    next(error)
-  })
+  await WalletModel.increment({ balance: totalPoints }, { where: { UserId: req.body.UserId } })
 }
 
 function renderOrderPdf (doc: PDFKit.PDFDocument, params: {
